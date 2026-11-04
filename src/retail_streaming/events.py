@@ -27,6 +27,21 @@ def is_valid() -> F.Column:
     )
 
 
+def rejection_reason() -> F.Column:
+    """The first rule an event breaks, so the dead-letter table says why it was rejected."""
+    return (
+        F.when(F.col("event_id").isNull() & F.col("event_type").isNull() & F.col("store_id").isNull(),
+               "unparseable_json")
+        .when(F.col("event_id").isNull(), "missing_event_id")
+        .when(F.col("store_id").isNull(), "missing_store_id")
+        .when(F.col("event_type").isNull() | ~F.col("event_type").isin("SALE", "RETURN"), "unknown_event_type")
+        .when(F.col("quantity").isNull() | (F.col("quantity") <= 0), "non_positive_quantity")
+        .when(F.col("unit_price").isNull() | (F.col("unit_price") < 0), "negative_unit_price")
+        .when(F.col("event_time").isNull(), "bad_timestamp")
+        .otherwise("unknown")
+    )
+
+
 def parse(raw: DataFrame, value_col: str = "value") -> Tuple[DataFrame, DataFrame]:
     """`raw` has a string/binary JSON column (Kafka `value` or a text file `value`)."""
     parsed = (
@@ -40,7 +55,7 @@ def parse(raw: DataFrame, value_col: str = "value") -> Tuple[DataFrame, DataFram
     )
     valid = parsed.filter(is_valid()).drop("raw_json", "event_ts")
     dead = parsed.filter(~F.coalesce(is_valid(), F.lit(False))).select(
-        "raw_json", F.lit("schema_or_rule_violation").alias("reason"), "_ingested_at")
+               "raw_json", rejection_reason().alias("reason"), "_ingested_at")
     return valid, dead
 
 
